@@ -1,85 +1,79 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, ExecuteProcess
+from launch.actions import IncludeLaunchDescription, TimerAction, DeclareLaunchArgument, ExecuteProcess
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
-from launch.conditions import IfCondition
 from launch_ros.actions import Node
 
-def generate_launch_description():
-    # Package Directories
-    ntu_pkg_dir = get_package_share_directory('ntu_robotsim_octomap')
-    odom_tf_pkg_dir = get_package_share_directory('odom_to_tf_ros2')
-    nav2_pkg_dir = get_package_share_directory('nav2_bringup')
 
-    # Launch Arguments
-    use_rviz = LaunchConfiguration('rviz')
-    use_teleop = LaunchConfiguration('teleop')
+def generate_launch_description():
+    # Setup Package Directories
+    pkg_octo_map = get_package_share_directory('ntu_robotsim_octomap')
+    pkg_nav2_bringup = get_package_share_directory('nav2_bringup')
+    pkg_odom_tf = get_package_share_directory('odom_to_tf_ros2')
+    pkg_octomap_server = get_package_share_directory('octomap_server2')
 
     # 1. Launch the Maze Environment (Gazebo)
-    maze_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(ntu_pkg_dir, 'launch', 'maze.launch.py')
-        )
+    launch_maze = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg_octo_map, 'launch', 'maze.launch.py'))
     )
 
     # 2. Launch the Robot and Bridge
-    robot_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(ntu_pkg_dir, 'launch', 'single_robot_sim.launch.py')
-        )
+    launch_robot = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg_octo_map, 'launch', 'single_robot_sim.launch.py'))
     )
 
     # 3. Launch TF Publishers (Odom to TF and Static Transform)
-    odom_tf_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(odom_tf_pkg_dir, 'launch', 'odom_to_tf.launch.py')
-        )
+    launch_odom_tf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg_odom_tf, 'launch', 'odom_to_tf.launch.py'))
     )
 
-    # 4. Launch OctoMap Server
-    octomap_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(ntu_pkg_dir, 'launch', 'octomap_filtered.launch.py')
-        )
+    # 4. Launch OctoMap Server with the filtered point cloud from the camera
+    launch_octomap = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg_octomap_server, 'launch', 'octomap_filtered.launch.py'))
     )
 
-    # 5. Launch Nav2
-    nav2_params_file = os.path.join(ntu_pkg_dir, 'config', 'nav2_octomap_params.yaml')
-    
-    nav2_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(nav2_pkg_dir, 'launch', 'navigation_launch.py')
-        ),
-        launch_arguments={
-            'params_file': nav2_params_file,
-            'use_sim_time': 'true'
-        }.items()
-    )
+    # 5. Launch RViz with a pre-configured view of the octomap and robot state
+    rviz_config_path = os.path.join(pkg_octo_map, 'config', 'config.rviz')
 
-    # 6. Launch RViz
-    rviz_cmd = ExecuteProcess(
-        condition=IfCondition(use_rviz),
-        cmd=['ros2', 'run', 'rviz2', 'rviz2'],
+    launch_rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', rviz_config_path],
         output='screen'
     )
 
-    # 7. Launch Teleop (Note: captures keyboard in the terminal where launch is run)
-    teleop_cmd = ExecuteProcess(
-        condition=IfCondition(use_teleop),
-        cmd=['ros2', 'run', 'teleop_twist_keyboard', 'teleop_twist_keyboard'],
-        output='screen'
+    # 6. Launch Nav2 after a delay to ensure the octomap server and TFs are up and running
+
+    # Nav2 params file path
+    nav2_params_path = os.path.join(pkg_octo_map, 'config', 'nav2_octomap_params.yaml')
+
+    launch_nav2 = TimerAction(period=10.0, actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(pkg_nav2_bringup, 'launch', 'navigation_launch.py')),
+                launch_arguments={
+                    'params_file': nav2_params_path,
+                    'use_sim_time': 'true',
+                    'use_rviz': 'false'
+                }.items()
+            )
+        ]
+    )
+
+    # Static transform from map to odom frame, since the robot is not moving in the world, we can set the transform to be static
+    static_map_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom']
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('rviz', default_value='true', description='Open RViz'),
-        DeclareLaunchArgument('teleop', default_value='true', description='Open Teleop'),
-        maze_launch,
-        robot_launch,
-        odom_tf_launch,
-        octomap_launch,
-        nav2_launch,
-        rviz_cmd,
-        teleop_cmd
+        launch_maze,
+        launch_robot,
+        launch_odom_tf,
+        launch_octomap,
+        launch_rviz,
+        launch_nav2,
+        static_map_tf
     ])
